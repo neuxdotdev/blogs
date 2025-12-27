@@ -1,0 +1,19 @@
+{
+  "name": "blogs",
+  "version": "1.0.0",
+  "description": "Information from developer to developer, factual and accurate",
+  "main": "src/index.js",
+  "repository": "https://github.com/neuxdotdev/blogs.git",
+  "author": "neuxdotdev <neuxdev1@gmail.com>",
+  "license": "GPL-3.0-only",
+  "private": false,
+  "dependencies": {
+    "docsify-cli": "^4.4.4"
+  },
+  "scripts": {
+    "serve": "docsify serve -o --port 8080",
+    "serve-reload": "docsify serve -P 8081",
+
+    "init:blogs": "bash ./scripts/initBlogs.sh"
+  }
+}
