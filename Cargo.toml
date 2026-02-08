@@ -1,0 +1,12 @@
+[package]
+name = "blogs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[dev-dependencies]
+mdbook = "0.5.2"
+mdbook-alerts = "0.8.0"
+mdbook-embedify = "0.3.2"
+mdbook-pdf = "0.1.13"
