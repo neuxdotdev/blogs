@@ -2,8 +2,7 @@ name: Build and Deploy mdBook
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
@@ -12,29 +11,77 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
-  cancel-in-progress: false
+  group: pages
+  cancel-in-progress: true
+
+env:
+  BOOK_DIR: blog
+  BUILD_DIR: blog/book
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
+      # Checkout repo
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install mdBook
-        run: |
-          cargo install mdbook --locked
+      # Install Rust toolchain
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
+      # Cache cargo (SUPER penting biar build ga lama)
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-mdbook-${{ hashFiles('**/Cargo.lock') }}
+
+      # Install mdBook + preprocessors
+      - name: Install mdBook and plugins
+        run: |
+          set -euxo pipefail
+
+          cargo install mdbook --locked
+          cargo install mdbook-alerts
+          cargo install mdbook-embedify
+          cargo install mdbook-pdf
+
+      # Debug versions (biar gampang trace error)
+      - name: Debug tool versions
+        run: |
+          which mdbook
+          mdbook --version
+          mdbook-alerts --version
+          mdbook-embedify --version
+          mdbook-pdf --version
+
+      # Validate structure
+      - name: Check book directory
+        run: |
+          test -f $BOOK_DIR/book.toml
+
+      # Build mdBook (verbose mode)
       - name: Build documentation
         run: |
-          mdbook build blog
+          set -euxo pipefail
+          mdbook build $BOOK_DIR -vv
 
+      # Verify output exists
+      - name: Verify build output
+        run: |
+          ls -lah $BUILD_DIR
+          test -f $BUILD_DIR/index.html
+
+      # Upload artifact
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: book
+          path: ${{ env.BUILD_DIR }}
 
   deploy:
     needs: build
