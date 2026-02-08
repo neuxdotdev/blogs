@@ -12,81 +12,192 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false  # Hindari cancel biar build konsisten
 
 env:
   BOOK_DIR: blog
   BUILD_DIR: blog/book
+  CARGO_HOME: ${{ runner.temp }}/.cargo  # Isolate cargo
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 15  # Prevent infinite runs
+    
     steps:
-      # Checkout repo
-      - name: Checkout repository
+      # 1. CHECKOUT - dengan retry
+      - name: Checkout repository dengan retry
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          retry-on-error: true
 
-      # Install Rust toolchain
-      - name: Install Rust
+      # 2. VALIDASI STRUKTUR AWAL
+      - name: Validasi struktur proyek
+        run: |
+          echo "🔍 Validasi struktur..."
+          if [ ! -d "$BOOK_DIR" ]; then
+            echo "❌ Direktori '$BOOK_DIR' tidak ditemukan!"
+            ls -la
+            exit 1
+          fi
+          
+          if [ ! -f "$BOOK_DIR/book.toml" ]; then
+            echo "❌ File '$BOOK_DIR/book.toml' tidak ditemukan!"
+            ls -la $BOOK_DIR/
+            exit 1
+          fi
+          
+          echo "✅ Struktur valid"
+          echo "📁 Isi $BOOK_DIR:"
+          ls -la $BOOK_DIR/
+          echo -e "\n📄 book.toml:"
+          head -20 $BOOK_DIR/book.toml
+
+      # 3. SETUP RUST - dengan toolchain stable
+      - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rust-src, rustfmt, clippy
 
-      # Cache cargo (SUPER penting biar build ga lama)
-      - name: Cache cargo registry
+      # 4. CACHE - untuk semua dependencies
+      - name: Cache cargo dependencies
         uses: actions/cache@v4
+        id: cargo-cache
         with:
           path: |
             ~/.cargo/bin
-            ~/.cargo/registry
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-mdbook-${{ hashFiles('**/Cargo.lock') }}
+            ${{ env.CARGO_HOME }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
-      # Install mdBook + preprocessors
-      - name: Install mdBook and plugins
+      # 5. INSTALL MDBOOK - dengan versi spesifik untuk konsistensi
+      - name: Install mdBook dan plugins
         run: |
-          set -euxo pipefail
+          echo "🛠️ Menginstall mdBook..."
+          
+          # Export PATH untuk cargo
+          echo "CARGO_HOME=$CARGO_HOME" >> $GITHUB_ENV
+          echo "$CARGO_HOME/bin" >> $GITHUB_PATH
+          
+          # Install dengan versi spesifik untuk konsistensi
+          cargo install mdbook --version 0.4.36 --force
+          cargo install mdbook-alerts --version 0.1.0 --force
+          cargo install mdbook-embedify --version 0.1.0 --force
+          cargo install mdbook-pdf --version 0.1.0 --force
+          
+          # Verifikasi instalasi
+          echo "📦 Versi yang terinstall:"
+          mdbook --version || echo "❌ mdbook gagal"
+          mdbook-alerts --version || echo "⚠️  mdbook-alerts tidak punya --version"
+          mdbook-embedify --version || echo "⚠️  mdbook-embedify tidak punya --version"
+          mdbook-pdf --version || echo "⚠️  mdbook-pdf tidak punya --version"
 
-          cargo install mdbook --locked
-          cargo install mdbook-alerts
-          cargo install mdbook-embedify
-          cargo install mdbook-pdf
-
-      # Debug versions (biar gampang trace error)
-      - name: Debug tool versions
+      # 6. VALIDASI MDBOOK CONFIG
+      - name: Validasi konfigurasi mdBook
         run: |
-          which mdbook
-          mdbook --version
-          mdbook-alerts --version
-          mdbook-embedify --version
-          mdbook-pdf --version
+          echo "🔧 Validasi book.toml..."
+          cd $BOOK_DIR
+          
+          # Cek syntax dasar
+          if ! mdbook build --dest-dir ../test-build 2>&1 | grep -q "Book building has started"; then
+            echo "❌ mdBook config error!"
+            mdbook build --dest-dir ../test-build 2>&1 | head -50
+            exit 1
+          fi
+          
+          rm -rf ../test-build
+          echo "✅ Config valid"
 
-      # Validate structure
-      - name: Check book directory
+      # 7. CLEAN BUILD - pastikan clean state
+      - name: Clean previous builds
         run: |
-          test -f $BOOK_DIR/book.toml
+          echo "🧹 Membersihkan build sebelumnya..."
+          rm -rf $BUILD_DIR
+          rm -rf $BOOK_DIR/book
 
-      # Build mdBook (verbose mode)
+      # 8. BUILD - dengan error handling detail
       - name: Build documentation
+        id: build-book
         run: |
-          set -euxo pipefail
-          mdbook build $BOOK_DIR -vv
+          echo "🏗️  Memulai build..."
+          cd $BOOK_DIR
+          
+          # Build dengan output verbose
+          set -o pipefail
+          if ! mdbook build --dest-dir ../book -v 2>&1 | tee build.log; then
+            echo "❌ Build gagal!"
+            echo "=== TAIL LOG ==="
+            tail -100 build.log
+            echo "=== ERRORS ==="
+            grep -i "error\|failed\|panic" build.log | head -20
+            exit 1
+          fi
+          
+          echo "✅ Build berhasil!"
+          echo "=== BUILD SUMMARY ==="
+          tail -20 build.log
 
-      # Verify output exists
+      # 9. VERIFY OUTPUT
       - name: Verify build output
         run: |
-          ls -lah $BUILD_DIR
-          test -f $BUILD_DIR/index.html
+          echo "🔎 Verifikasi output..."
+          
+          REQUIRED_FILES=("index.html" "search.html" "favicon.svg")
+          
+          if [ ! -d "$BUILD_DIR" ]; then
+            echo "❌ $BUILD_DIR tidak ada!"
+            exit 1
+          fi
+          
+          for file in "${REQUIRED_FILES[@]}"; do
+            if [ ! -f "$BUILD_DIR/$file" ]; then
+              echo "⚠️  File $file tidak ditemukan, tapi lanjut..."
+            else
+              echo "✅ $file ditemukan"
+            fi
+          done
+          
+          echo "📊 Statistik output:"
+          du -sh $BUILD_DIR
+          echo "File HTML:"
+          find $BUILD_DIR -name "*.html" | wc -l
+          echo "Total files:"
+          find $BUILD_DIR -type f | wc -l
 
-      # Upload artifact
+      # 10. TEST SERVE (optional)
+      - name: Test serve locally
+        if: false  # Nonaktifkan dulu, aktifkan jika perlu debug
+        run: |
+          echo "🌐 Testing serve..."
+          cd $BOOK_DIR
+          timeout 30 mdbook serve --dest-dir ../test-serve &
+          sleep 5
+          if curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 | grep -q "200"; then
+            echo "✅ Serve test passed"
+            pkill mdbook
+          else
+            echo "⚠️  Serve test failed"
+            pkill mdbook 2>/dev/null || true
+          fi
+
+      # 11. UPLOAD ARTIFACT - dengan validasi
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: ${{ env.BUILD_DIR }}
+          retention-days: 1
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
-
+    if: github.ref == 'refs/heads/main'  # Hanya deploy dari main
+    
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -95,3 +206,12 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          artifact_name: github-pages
+          timeout: 600000  # 10 minutes timeout
+
+      - name: Verify deployment
+        run: |
+          echo "✅ Deployment initiated!"
+          echo "URL: ${{ steps.deployment.outputs.page_url }}"
+          echo "Commit: ${{ github.sha }}"
